@@ -1,25 +1,25 @@
 /**
- * Daily Brief – Backend
- * - Fetches Google News RSS
- * - Converts to clean JSON
- * - Caches once per day
- * - Enables CORS for frontend
+ * Daily Brief – Backend (ESM)
+ * Node 18+ / 22 compatible
  */
 
-const express = require("express");
-const cors = require("cors");
-const fetch = require("node-fetch");
-const xml2js = require("xml2js");
-
-const app = express();
-app.use(cors()); // ✅ REQUIRED for frontend
-app.use(express.json());
+import express from "express";
+import cors from "cors";
+import fetch from "node-fetch";
+import { parseStringPromise } from "xml2js";
 
 /* =========================
-   CONFIG
+   APP SETUP
 ========================= */
+const app = express();
+app.use(cors());
+app.use(express.json());
+
 const PORT = process.env.PORT || 3000;
 
+/* =========================
+   FEEDS
+========================= */
 const FEEDS = {
   india: "https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en",
   karnataka:
@@ -32,97 +32,90 @@ const FEEDS = {
 };
 
 /* =========================
-   IN-MEMORY CACHE
+   CACHE (daily)
 ========================= */
-let cachedData = null;
-let lastUpdatedDate = null;
+let cachedResponse = null;
+let lastFetchDate = null;
 
 /* =========================
    HELPERS
 ========================= */
-function todayKey() {
-  return new Date().toISOString().split("T")[0];
-}
+const todayKey = () => new Date().toISOString().split("T")[0];
 
-async function fetchRSS(url) {
-  const res = await fetch(url, { timeout: 15000 });
-  const xml = await res.text();
-  return xml2js.parseStringPromise(xml, { trim: true });
-}
-
-function extractItems(parsed) {
-  const items = parsed.rss.channel[0].item || [];
-  return items.slice(0, 3).map(item => ({
-    title: item.title?.[0] || "",
-    link: item.link?.[0] || "",
-    source: extractSource(item.link?.[0])
-  }));
-}
-
-function extractSource(link) {
+const extractSource = link => {
   try {
-    const url = new URL(link);
-    return url.hostname.replace("www.", "");
+    return new URL(link).hostname.replace("www.", "");
   } catch {
     return "news.google.com";
   }
-}
+};
+
+const extractItems = parsed =>
+  (parsed?.rss?.channel?.[0]?.item || [])
+    .slice(0, 3)
+    .map(item => ({
+      title: item.title?.[0] || "",
+      link: item.link?.[0] || "",
+      source: extractSource(item.link?.[0])
+    }));
 
 /* =========================
-   CORE FETCH LOGIC
+   FETCH LOGIC
 ========================= */
-async function refreshNewsIfNeeded() {
+async function refreshIfNeeded() {
   const today = todayKey();
 
-  if (cachedData && lastUpdatedDate === today) {
-    return cachedData; // ✅ use cache
+  if (cachedResponse && lastFetchDate === today) {
+    return cachedResponse;
   }
 
   const data = {};
 
   for (const [section, url] of Object.entries(FEEDS)) {
     try {
-      const parsed = await fetchRSS(url);
+      const res = await fetch(url, { timeout: 15000 });
+      const xml = await res.text();
+      const parsed = await parseStringPromise(xml, { trim: true });
+
       data[section] = extractItems(parsed);
-    } catch (err) {
-      data[section] = cachedData?.data?.[section] || [];
+    } catch {
+      data[section] = cachedResponse?.data?.[section] || [];
     }
 
-    // small delay to avoid Google throttling
     await new Promise(r => setTimeout(r, 800));
   }
 
-  cachedData = {
+  cachedResponse = {
     lastUpdated: new Date().toISOString(),
     data
   };
 
-  lastUpdatedDate = today;
-  return cachedData;
+  lastFetchDate = today;
+  return cachedResponse;
 }
 
 /* =========================
-   API ENDPOINT
+   API
 ========================= */
-app.get("/api/news", async (req, res) => {
+app.get("/api/news", async (_req, res) => {
   try {
-    const result = await refreshNewsIfNeeded();
+    const result = await refreshIfNeeded();
     res.json(result);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: "Failed to load news" });
   }
 });
 
 /* =========================
-   HEALTH CHECK
+   HEALTH
 ========================= */
-app.get("/", (_, res) => {
-  res.send("Daily Brief backend is running");
+app.get("/", (_req, res) => {
+  res.send("Daily Brief backend running");
 });
 
 /* =========================
-   START SERVER
+   START
 ========================= */
 app.listen(PORT, () => {
-  console.log(`Daily Brief backend running on port ${PORT}`);
+  console.log(`✅ Daily Brief backend live on port ${PORT}`);
 });
